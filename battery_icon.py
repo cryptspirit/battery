@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 # -*- coding: utf-8 -*-
 #
 #       battery_icon.py
@@ -19,36 +19,38 @@
 #       along with this program; if not, write to the Free Software
 #       Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #       MA 02110-1301, USA.
-import os
-import re
+from os.path import isdir
 import gtk
 import time
 import threading
-import subprocess
 import sys
 
 class ACPI_Parser():
-    '''
-    Класс чтения информации из acpi
+    ''' Класс чтения информации из acpi
     '''
     path_to_bat = '/sys/class/power_supply'
     bat_name = 'BAT0'
-    
+    bat_dir = '%s/%s' % (path_to_bat, bat_name)
+    charge_name = ['charge', 'energe'][0]
+    power_name = ['current', 'power'][0]
+
     def read(self):
         return self.__pars_out_new__()
-    
+
     def __pars_out_new__(self):
+        ''' Получения данных из /sys
         '''
-        Получения данных из /sys
-        '''
-        status = {'energy_now': 0, 'energy_full': 0, 'power_now': 0, 'energy_full_design': 0, 'status': 0}
+        status = {'%s_now' % self.charge_name: 0,
+                '%s_full' % self.charge_name: 0,
+                '%s_now' % self.power_name: 0,
+                '%s_full_design' % self.charge_name: 0,
+                'status': 0,
+                }
         return_battery_array = {}
-        bat_dir = os.path.join(self.path_to_bat, self.bat_name)
-        if os.path.isdir(bat_dir):
+        if isdir(self.bat_dir):
             for i in status.keys():
-                f = open(os.path.join(bat_dir, i))
-                status_value = f.read()
-                f.close()
+                with open('%s/%s' % (self.bat_dir, i)) as f:
+                    status_value = f.read()
                 if i == 'status':
                     if status_value.find('Charging') == 0: # зарядка
                         status[i] = 1
@@ -58,22 +60,24 @@ class ACPI_Parser():
                         status[i] = 0
                 else:
                     status[i] = int(status_value)
-                
-            return_battery_array['Stat'] = int(float(status['energy_now']) * 100 / status['energy_full'])
+            cnow = float(status['%s_now' % self.charge_name])
+            cfull = status['charge_full']
+            return_battery_array['Stat'] = int(cnow*100 / cfull)
             return_battery_array['Status'] = status['status']
             # time
-            h = str(int(float(status['energy_now']) / status['power_now']))
-            m = str(int(((float(status['energy_now']) % status['power_now']) / status['power_now']) * 60))
-            return_battery_array['Time'] = '%s:%s' % (h.zfill(2), m.zfill(2))
-            
-            return_battery_array['Diff_design'] =  int(float(status['energy_full']) * 100 / status['energy_full_design'])
+            if status['%s_now' % self.power_name]:
+                h = str(int(cnow / status['%s_now' % self.power_name]))
+                m = str(int(((float(status['charge_now']) % status['current_now']) / status['current_now']) * 60))
+                return_battery_array['Time'] = '%s:%s' % (h.zfill(2), m.zfill(2))
+            else:
+                return_battery_array['Time'] = ''
+            return_battery_array['Diff_design'] =  int(float(status['charge_full']) * 100 / status['charge_full_design'])
             return return_battery_array
         else:
             return None
-            
+
 class Battery_Icon(gtk.StatusIcon):
-    '''
-    Виджет батареи
+    ''' Виджет батареи
     '''
     def __init__(self):
         gtk.StatusIcon.__init__(self)
@@ -83,10 +87,9 @@ class Battery_Icon(gtk.StatusIcon):
         self.set_from_pixbuf(pixb)
         self.connect('popup-menu', self.menu)
         self.ACPI = ACPI_Parser()
-        
+
     def init_battery(self):
-        '''
-        Активирование слежения за электропитанием
+        ''' Активирование слежения за электропитанием
         '''
         gtk.gdk.threads_init()
         t = threading.Timer(1, self.thread)
@@ -94,13 +97,12 @@ class Battery_Icon(gtk.StatusIcon):
         gtk.gdk.threads_enter()
         gtk.main()
         gtk.gdk.threads_leave()
-    
+
     def make_icon_file_name(self, battery):
-        '''
-        Формирование строки имени иконки
+        ''' Формирование строки имени иконки
         '''
         plugged = ''
-        if battery['Status'] == 1: plugged = '-plugged'
+        if battery['Status'] >= 0 : plugged = '-plugged'
         if battery['Stat'] <= 100 and battery['Stat'] >= 90:
             prc = '100'
         elif battery['Stat'] < 90 and battery['Stat'] >= 70:
@@ -114,14 +116,13 @@ class Battery_Icon(gtk.StatusIcon):
         else:
             prc = '000'
         return 'notification-battery-%s%s' % (prc, plugged)
-    
+
     def thread(self):
-        '''
-        Поток
+        ''' Поток
         '''
         now = []
         while self.exit_flag:
-            now_old = now  
+            now_old = now
             now = self.ACPI.read()
             if not now:
                 pixb = gtk.icon_theme_get_default().load_icon(\
@@ -135,21 +136,23 @@ class Battery_Icon(gtk.StatusIcon):
                     pixb = thm.load_icon(self.make_icon_file_name(now),
                                         22, gtk.ICON_LOOKUP_USE_BUILTIN)
                     self.set_from_pixbuf(pixb)
+                    bat_stat = str(now['Stat']) + ' %'
+                    bat_design = str(now['Diff_design']) + ' %'
                     if now['Status'] == 1:
-                        self.set_tooltip('Зарядка %s осталось %s ресурс %s' % (now['Stat'], now['Time'], now['Diff_design']))
+                        self.set_tooltip('Зарядка %s. Ресурс %s' % (bat_stat, bat_design))
+                    elif now['Status'] >= 0:
+                        self.set_tooltip('%s Батарея заряжена. Ресурс %s' % (bat_stat, bat_design))
                     else:
-                        self.set_tooltip('Емкость %s осталось %s ресурс %s' % (now['Stat'], now['Time'], now['Diff_design']))
+                        self.set_tooltip('Емкость %s осталось %s. Ресурс %s' % (bat_stat, now['Time'], bat_design))
                     gtk.gdk.threads_leave()
-                
             for i in xrange(4):
                 if self.exit_flag:
                     time.sleep(1)
                 else:
                     break
-    
+
     def menu(self, icon, event_button, event_time):
-        '''
-        Контекстное меню
+        ''' Контекстное меню
         '''
         menu = gtk.Menu()
         item = gtk.MenuItem('Exit')
@@ -157,10 +160,9 @@ class Battery_Icon(gtk.StatusIcon):
         item.show()
         menu.append(item)
         menu.popup(None, None, gtk.status_icon_position_menu, event_button, event_time, icon)
-        
+
     def dest(self, *args):
-        '''
-        Функция выхода из программы
+        ''' Функция выхода из программы
         '''
         self.set_visible(False)
         gtk.main_quit()
